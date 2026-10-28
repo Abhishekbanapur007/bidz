@@ -1,0 +1,6 @@
+{
+  "name": "Bidz - Multi-Category Live Auction Marketplace",
+  "description": "Signup-first live auction marketplace featuring sports memorabilia, college resale, electronics, government procurement tenders, skill auctions, and vehicle bidding.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
