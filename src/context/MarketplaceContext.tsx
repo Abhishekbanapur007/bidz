@@ -34,7 +34,7 @@ interface MarketplaceContextType {
   resetFilters: () => void;
 
   // Actions
-  placeBid: (listingId: string, amount: number) => { success: boolean; message: string };
+placeBid: (listingId: string, amount: number) => Promise<{ success: boolean; message: string }>;
   buyNow: (listingId: string) => { success: boolean; message: string };
   toggleWatchlist: (listingId: string) => void;
   isInWatchlist: (listingId: string) => boolean;
@@ -170,105 +170,185 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [isNotificationsOpen, setIsNotificationsOpen] = useState<boolean>(false);
 
   // Load real auction listings from Supabase
-  useEffect(() => {
-    let cancelled = false;
+  
+useEffect(() => {
+  let cancelled = false;
 
-    async function loadSupabaseListings() {
-      const { data: rows, error } = await supabase
-        .from('listings')
-        .select('*')
-        .order('created_at', { ascending: false });
+  async function loadSupabaseListings() {
+    const { data: rows, error } = await supabase
+      .from('listings')
+      .select('*')
+      .order('created_at', { ascending: false });
 
-      if (error) {
-        console.error('Could not load Supabase listings:', error.message);
-        return;
-      }
-
-      if (!rows || rows.length === 0 || cancelled) {
-        return;
-      }
-
-      const sellerIds = [...new Set(rows.map((row) => row.seller_id))];
-
-      const { data: profiles, error: profileError } = await supabase
-        .from('profiles')
-        .select('id, full_name')
-        .in('id', sellerIds);
-
-      if (profileError) {
-        console.error('Could not load seller profiles:', profileError.message);
-      }
-
-      const profileMap = new Map(
-        (profiles || []).map((profile) => [profile.id, profile.full_name])
-      );
-
-      const realListings: ListingItem[] = rows.map((row) => {
-        const categoryMap: Record<string, CategoryId> = {
-          sports: 'sports',
-          college: 'college',
-          electronics: 'electronics',
-          government: 'government',
-          skills: 'skills',
-          vehicles: 'vehicles',
-        };
-
-        const startingPrice = Number(row.starting_price);
-        const increment = Number(row.min_increment);
-
-        return {
-          id: row.id,
-          title: row.title,
-          description: row.description || '',
-          category: categoryMap[row.category] || 'college',
-          images: row.image_url ? [row.image_url] : [],
-          seller: {
-            id: row.seller_id,
-            name: profileMap.get(row.seller_id) || 'Bidz Seller',
-            avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-            rating: 5,
-            reviewsCount: 0,
-            isVerified: false,
-            memberSince: new Date(row.created_at).getFullYear().toString(),
-            verifiedBadgeText: 'Seller',
-          },
-          currentBid: startingPrice,
-          minNextBid: startingPrice + increment,
-          startingBid: startingPrice,
-          bidCount: 0,
-          bids: [],
-          startTime: row.start_time,
-          endTime: row.end_time,
-          status:
-            row.status === 'closed' ? 'completed' :
-            row.status === 'active' || row.status === 'scheduled'
-              ? 'live'
-              : 'sold',
-          isTrending: false,
-          isFresh: true,
-          location: 'Online',
-          shippingOrDelivery: 'Contact seller for delivery details',
-          views: 0,
-          watchers: 0,
-          attributes: {},
-        };
-      });
-
-      if (cancelled) return;
-
-      setListings((previous) => {
-        const realIds = new Set(realListings.map((item) => item.id));
-        const remaining = previous.filter((item) => !realIds.has(item.id));
-        return [...realListings, ...remaining];
-      });
+    if (error) {
+      console.error('Could not load Supabase listings:', error.message);
+      return;
     }
 
-    void loadSupabaseListings();
+    if (!rows || rows.length === 0 || cancelled) return;
 
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    // Fetch all bids for these listings
+    const listingIds = rows.map((row) => row.id);
+
+    const { data: bidRows, error: bidError } = await supabase
+      .from('bids')
+      .select('*')
+      .in('listing_id', listingIds)
+      .order('created_at', { ascending: false });
+
+    if (bidError) {
+      console.error('Could not load bids:', bidError.message);
+    }
+
+    // Fetch bidder profiles
+    const bidderIds = [
+      ...new Set((bidRows || []).map((bid) => bid.bidder_id)),
+    ];
+
+    const { data: bidderProfiles, error: bidderError } =
+      bidderIds.length > 0
+        ? await supabase
+            .from('profiles')
+            .select('id, full_name')
+            .in('id', bidderIds)
+        : { data: [], error: null };
+
+    if (bidderError) {
+      console.error('Could not load bidder profiles:', bidderError.message);
+    }
+
+    const bidderMap = new Map(
+      (bidderProfiles || []).map((profile) => [
+        profile.id,
+        profile.full_name,
+      ])
+    );
+
+    // Group bids by listing
+    const bidsByListing = new Map<string, BidRecord[]>();
+
+    (bidRows || []).forEach((bid) => {
+      const newBid: BidRecord = {
+        id: String(bid.id),
+        bidderId: bid.bidder_id,
+        bidderName: bidderMap.get(bid.bidder_id) || 'Bidz User',
+        bidderAvatar: '',
+        bidderCollege: '',
+        amount: Number(bid.amount),
+        timestamp: new Date(bid.created_at).toLocaleString(),
+        isWinning: false,
+      };
+
+      const existing = bidsByListing.get(bid.listing_id) || [];
+      existing.push(newBid);
+      bidsByListing.set(bid.listing_id, existing);
+    });
+
+    const sellerIds = [...new Set(rows.map((row) => row.seller_id))];
+
+    const { data: profiles, error: profileError } = await supabase
+      .from('profiles')
+      .select('id, full_name')
+      .in('id', sellerIds);
+
+    if (profileError) {
+      console.error('Could not load seller profiles:', profileError.message);
+    }
+
+    const profileMap = new Map(
+      (profiles || []).map((profile) => [profile.id, profile.full_name])
+    );
+
+    const realListings: ListingItem[] = rows.map((row) => {
+      const categoryMap: Record<string, CategoryId> = {
+        sports: 'sports',
+        Sports: 'sports',
+        college: 'college',
+        College: 'college',
+        electronics: 'electronics',
+        Electronics: 'electronics',
+        government: 'government',
+        'Government Projects': 'government',
+        skills: 'skills',
+        'Skill Auctions': 'skills',
+        vehicles: 'vehicles',
+        Vehicles: 'vehicles',
+      };
+
+      const startingPrice = Number(row.starting_price);
+      const increment = Number(row.min_increment);
+
+      const listingBids = bidsByListing.get(row.id) || [];
+
+      // Find the highest bid
+      const highestBid = listingBids.reduce(
+        (highest, bid) => Math.max(highest, bid.amount),
+        startingPrice
+      );
+
+      // Mark the highest bid as winning
+      const winningBidIndex = listingBids.findIndex(
+        (bid) => bid.amount === highestBid
+      );
+
+      const updatedBids = listingBids.map((bid, index) => ({
+        ...bid,
+        isWinning: index === winningBidIndex,
+      }));
+
+      return {
+        id: row.id,
+        title: row.title,
+        description: row.description || '',
+        category: categoryMap[row.category] || 'college',
+        images: row.image_url ? [row.image_url] : [],
+        seller: {
+          id: row.seller_id,
+          name: profileMap.get(row.seller_id) || 'Bidz Seller',
+          avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
+          rating: 5,
+          reviewsCount: 0,
+          isVerified: false,
+          memberSince: new Date(row.created_at).getFullYear().toString(),
+          verifiedBadgeText: 'Seller',
+        },
+        currentBid: highestBid,
+        minNextBid: highestBid + increment,
+        startingBid: startingPrice,
+        bidCount: listingBids.length,
+        bids: updatedBids,
+        startTime: row.start_time,
+        endTime: row.end_time,
+        status:
+          row.status === 'closed' ? 'completed' :
+          row.status === 'active' || row.status === 'scheduled'
+            ? 'live'
+            : 'sold',
+        isTrending: false,
+        isFresh: true,
+        location: 'Online',
+        shippingOrDelivery: 'Contact seller for delivery details',
+        views: 0,
+        watchers: 0,
+        attributes: {},
+      };
+    });
+
+    if (cancelled) return;
+
+    setListings((previous) => {
+      const realIds = new Set(realListings.map((item) => item.id));
+      const remaining = previous.filter((item) => !realIds.has(item.id));
+      return [...realListings, ...remaining];
+    });
+  }
+
+  void loadSupabaseListings();
+
+  return () => {
+    cancelled = true;
+  };
+}, []);
 
   // Sync state to local storage
   useEffect(() => {
@@ -323,92 +403,138 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const isInWatchlist = (listingId: string) => watchlist.includes(listingId);
 
-  const placeBid = (listingId: string, amount: number) => {
-    if (!currentUser) {
-      openSignupModal();
-      return { success: false, message: 'Please create an account or sign in to place live bids.' };
-    }
-
-    const listing = listings.find((l) => l.id === listingId);
-    if (!listing) return { success: false, message: 'Listing not found.' };
-
-    if (amount < listing.minNextBid) {
-      return {
-        success: false,
-        message: `Your bid must be at least $${listing.minNextBid.toLocaleString()} (minimum bid increment).`,
-      };
-    }
-
-    if (currentUser.walletBalance < amount) {
-      return {
-        success: false,
-        message: `Insufficient demo wallet balance ($${currentUser.walletBalance.toLocaleString()}). You can replenish your demo wallet in profile.`,
-      };
-    }
-
-    // Create Bid Record
-    const newBid: BidRecord = {
-      id: `bid_${Date.now()}`,
-      bidderId: currentUser.id,
-      bidderName: currentUser.name,
-      bidderAvatar: currentUser.avatar,
-      bidderCollege: currentUser.college,
-      amount: amount,
-      timestamp: 'Just now',
-      isWinning: true,
+  
+const placeBid = async (listingId: string, amount: number) => {
+  if (!currentUser) {
+    openSignupModal();
+    return {
+      success: false,
+      message: 'Please create an account or sign in to place live bids.',
     };
+  }
 
-    // Calculate next minimum increment (5% or $10 minimum)
-    const nextMin = Math.round(amount + Math.max(10, amount * 0.05));
+  const listing = listings.find((l) => l.id === listingId);
 
-    // Update listings
-    setListings((prev) =>
-      prev.map((item) => {
-        if (item.id === listingId) {
-          const updatedBids = [newBid, ...item.bids.map((b) => ({ ...b, isWinning: false }))];
-          return {
-            ...item,
-            currentBid: amount,
-            minNextBid: nextMin,
-            bidCount: item.bidCount + 1,
-            bids: updatedBids,
-          };
-        }
-        return item;
-      })
+  if (!listing) {
+    return { success: false, message: 'Listing not found.' };
+  }
+
+  if (amount < listing.minNextBid) {
+    return {
+      success: false,
+      message: `Your bid must be at least $${listing.minNextBid.toLocaleString()}.`,
+    };
+  }
+
+  if (currentUser.walletBalance < amount) {
+    return {
+      success: false,
+      message: `Insufficient demo wallet balance ($${currentUser.walletBalance.toLocaleString()}).`,
+    };
+  }
+
+  // Save bid in Supabase first
+  const { data: savedBid, error } = await supabase
+    .from('bids')
+    .insert({
+      listing_id: listingId,
+      bidder_id: currentUser.id,
+      amount: amount,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Bid saving failed:', error.message);
+
+    return {
+      success: false,
+      message: `Could not place bid: ${error.message}`,
+    };
+  }
+
+  // Create local bid record
+  const newBid: BidRecord = {
+    id: String(savedBid.id),
+    bidderId: currentUser.id,
+    bidderName: currentUser.name,
+    bidderAvatar: currentUser.avatar,
+    bidderCollege: currentUser.college,
+    amount: amount,
+    timestamp: 'Just now',
+    isWinning: true,
+  };
+
+  const nextMin = Math.round(
+    amount + Math.max(10, amount * 0.05)
+  );
+
+  // Update listing in the interface
+  setListings((prev) =>
+    prev.map((item) => {
+      if (item.id === listingId) {
+        return {
+          ...item,
+          currentBid: amount,
+          minNextBid: nextMin,
+          bidCount: item.bidCount + 1,
+          bids: [
+            newBid,
+            ...item.bids.map((b) => ({
+              ...b,
+              isWinning: false,
+            })),
+          ],
+        };
+      }
+      return item;
+    })
+  );
+
+  // Update user's bid history
+  setUserBids((prev) => {
+    const filtered = prev.filter(
+      (b) => b.listingId !== listingId
     );
 
-    // Update user bids log
-    setUserBids((prev) => {
-      const filtered = prev.filter((b) => b.listingId !== listingId);
-      const newEntry: UserBidLog = {
-        listingId: listing.id,
-        listingTitle: listing.title,
-        listingImage: listing.images[0],
-        category: listing.category,
-        amount: amount,
-        timestamp: 'Just now',
-        status: 'winning',
-        currentHighestBid: amount,
-        endTime: listing.endTime,
-      };
-      return [newEntry, ...filtered];
-    });
-
-    // Add toast notification
-    const newNotification: NotificationItem = {
-      id: `notif_${Date.now()}`,
-      title: 'Bid Placed Successfully!',
-      message: `You are now the highest bidder at $${amount.toLocaleString()} for "${listing.title}".`,
-      timestamp: 'Just now',
-      read: false,
-      type: 'winning',
+    const newEntry: UserBidLog = {
       listingId: listing.id,
+      listingTitle: listing.title,
+      listingImage: listing.images[0],
+      category: listing.category,
+      amount: amount,
+      timestamp: 'Just now',
+      status: 'winning',
+      currentHighestBid: amount,
+      endTime: listing.endTime,
     };
-    setNotifications((prev) => [newNotification, ...prev]);
 
-    return { success: true, message: `Success! You are now the highest bidder ($${amount.toLocaleString()}).` };
+    return [newEntry, ...filtered];
+  });
+
+  // Add notification
+  const newNotification: NotificationItem = {
+    id: `notif_${Date.now()}`,
+    title: 'Bid Placed Successfully!',
+    message: `You are now the highest bidder at $${amount.toLocaleString()} for "${listing.title}".`,
+    timestamp: 'Just now',
+    read: false,
+    type: 'winning',
+    listingId: listing.id,
   };
+
+  setNotifications((prev) => [
+    newNotification,
+    ...prev,
+  ]);
+
+  return {
+    success: true,
+    message: `Success! Your bid of $${amount.toLocaleString()} has been saved.`,
+  };
+};
+
+
 
   const buyNow = (listingId: string) => {
     if (!currentUser) {

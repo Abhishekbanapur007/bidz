@@ -18,7 +18,7 @@ export const BidModal: React.FC = () => {
   const item = activeBidModalItem;
   const currentMin = item.minNextBid;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     setSuccessMsg('');
@@ -35,7 +35,7 @@ export const BidModal: React.FC = () => {
     }
 
     setIsSubmitting(true);
-    const res = placeBid(item.id, val);
+    const res = await placeBid(item.id, val);
     setIsSubmitting(false);
 
     if (res.success) {
